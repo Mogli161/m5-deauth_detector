@@ -90,6 +90,11 @@ pio device monitor
 
 Stewart Moss © 2026
 
+Fork maintained by Mogli161. Changes in commit `b4d61f0` ("Replace buzzer with LED
+signaling, remove web UI, add menu + embedded GIF view") were implemented with AI
+assistance (Claude, via a Hermes agent session) based on the maintainer's requirements;
+see that commit's `Co-authored-by` trailer.
+
 ## License
 
 This project is provided for educational and security research purposes only. Use responsibly and only on networks you own or have explicit permission to monitor.

@@ -1,6 +1,58 @@
 #include "Display.h"
+#include "AlertManager.h"
 
-Display::Display() : currentView(VIEW_DASHBOARD), detailedPageIndex(0) {}
+static const char* MENU_ITEMS[] = { "Dashboard", "Live Log", "Detailed", "Gif" };
+static const int MENU_ITEM_COUNT = 4;
+
+Display::Display() : currentView(VIEW_MENU), detailedPageIndex(0), menuIndex(0) {}
+
+int Display::getMenuItemCount() { return MENU_ITEM_COUNT; }
+
+void Display::menuUp() {
+    menuIndex--;
+    if (menuIndex < 0) menuIndex = MENU_ITEM_COUNT - 1;
+}
+
+void Display::menuDown() {
+    menuIndex++;
+    if (menuIndex >= MENU_ITEM_COUNT) menuIndex = 0;
+}
+
+DisplayView Display::menuIndexToView(int index) {
+    switch (index) {
+        case 0: return VIEW_DASHBOARD;
+        case 1: return VIEW_LIVE_LOG;
+        case 2: return VIEW_DETAILED;
+        case 3: return VIEW_GIF;
+        default: return VIEW_MENU;
+    }
+}
+
+void Display::showMenu() {
+    clearScreen();
+    drawHeader("Menu");
+
+    int y = 30;
+    for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+        if (i == menuIndex) {
+            M5Cardputer.Display.fillRect(5, y - 2, 230, 16, 0x39C7); // highlight bar (dark gray-blue)
+            M5Cardputer.Display.setTextColor(WHITE, 0x39C7);
+            M5Cardputer.Display.setCursor(10, y);
+            M5Cardputer.Display.print("> ");
+        } else {
+            M5Cardputer.Display.setTextColor(WHITE, BLACK);
+            M5Cardputer.Display.setCursor(10, y);
+            M5Cardputer.Display.print("  ");
+        }
+        M5Cardputer.Display.print(MENU_ITEMS[i]);
+        M5Cardputer.Display.setTextColor(WHITE, BLACK);
+        y += 18;
+    }
+
+    M5Cardputer.Display.setTextColor(0x7BEF, BLACK);
+    M5Cardputer.Display.setCursor(5, 120);
+    M5Cardputer.Display.print("Up/Down select, Enter open, Esc back");
+}
 
 void Display::begin()
 {
@@ -39,7 +91,7 @@ void Display::showStartup()
     M5Cardputer.Display.println("By Stewart Moss (c) 2026.");
 }
 
-void Display::showAnimatedIntro()
+void Display::showAnimatedIntro(AlertManager* alertManager)
 {
 #define INTRO_DURATION 4000
 #define SCREEN_WIDTH 240
@@ -177,78 +229,50 @@ void Display::showAnimatedIntro()
             M5Cardputer.Display.print("By Stewart Moss (c) 2026");
         }
 
-        // === Elaborate Sound Sequence ===
+        // === LED Signal Sequence (replaces buzzer) ===
         int soundPhase = elapsed / 100; // Change every 100ms
 
         if (soundPhase != lastSoundPhase)
         {
             lastSoundPhase = soundPhase;
 
-            // Phase 0-3 (0-300ms): Power-on ascending sweep
-            if (elapsed < 300)
+            if (alertManager)
             {
-                int freq = 400 + (elapsed * 2.67); // 400Hz to 1200Hz
-                M5Cardputer.Speaker.tone(freq);
-            }
-            // Phase 3-8 (300-800ms): Staccato system beeps
-            else if (elapsed < 800)
-            {
-                int beepPhase = (elapsed - 300) / 100;
-                if (beepPhase % 2 == 0)
+                if (elapsed < 300)
                 {
-                    int freqs[] = {1000, 1200, 1400, 1600, 1800};
-                    M5Cardputer.Speaker.tone(freqs[beepPhase / 2]);
+                    alertManager->setLED(0xFFFF00);
                 }
-                else
+                else if (elapsed < 800)
                 {
-                    M5Cardputer.Speaker.end(); // noTone
+                    int beepPhase = (elapsed - 300) / 100;
+                    alertManager->setLED((beepPhase % 2 == 0) ? 0x00FFFF : 0x000000);
                 }
-            }
-            // Phase 8-25 (800-2500ms): Scanning pulse synced with radar
-            else if (elapsed < 2500)
-            {
-                int pulsePhase = ((elapsed - 800) / 200) % 2;
-                if (pulsePhase == 0)
+                else if (elapsed < 2500)
                 {
-                    M5Cardputer.Speaker.tone(600);
+                    int pulsePhase = ((elapsed - 800) / 200) % 2;
+                    alertManager->setLED(pulsePhase == 0 ? 0x0000FF : 0x00FFFF);
                 }
-                else
+                else if (elapsed < 3000)
                 {
-                    M5Cardputer.Speaker.tone(900);
+                    alertManager->setLED(0x000000);
                 }
-            }
-            // Phase 25-30 (2500-3000ms): Silence before confirmation
-            else if (elapsed < 3000)
-            {
-                // noTone(BUZZER_PIN);
-                M5Cardputer.Speaker.end();
-            }
-            // Phase 30-35 (3000-3500ms): Data processing sounds
-            else if (elapsed < 3500)
-            {
-                int clickPhase = ((elapsed - 3000) / 80) % 2;
-                if (clickPhase == 0)
+                else if (elapsed < 3500)
                 {
-                    M5Cardputer.Speaker.tone(2000);
+                    int clickPhase = ((elapsed - 3000) / 80) % 2;
+                    alertManager->setLED(clickPhase == 0 ? 0xFFFFFF : 0x000000);
                 }
-                else
+                else if (elapsed < 3700)
                 {
-                    M5Cardputer.Speaker.end(); // noTone
-                    //  noTone(BUZZER_PIN);
+                    alertManager->setLED(0x00FF00);
                 }
-            }
-            // Phase 35-40 (3500-4000ms): Confirmation chime - descending
-            else if (elapsed < 3700)
-            {
-                M5Cardputer.Speaker.tone(1600);
-            }
-            else if (elapsed < 3850)
-            {
-                M5Cardputer.Speaker.tone(1200);
-            }
-            else if (elapsed < 4000)
-            {
-                M5Cardputer.Speaker.tone(800);
+                else if (elapsed < 3850)
+                {
+                    alertManager->setLED(0x008000);
+                }
+                else if (elapsed < 4000)
+                {
+                    alertManager->setLED(0x003000);
+                }
             }
         }
 
@@ -257,16 +281,13 @@ void Display::showAnimatedIntro()
         if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed())
         {
             skipped = true;
-            M5Cardputer.Speaker.end(); // noTone
-                                       // noTone(BUZZER_PIN);
         }
 
         delay(16); // ~60fps
     }
 
-    // Ensure buzzer is off
-    // noTone(BUZZER_PIN);
-    M5Cardputer.Speaker.end(); // noTone
+    // Ensure LED is off after intro
+    if (alertManager) alertManager->setLED(0x000000);
 
     // Brief pause before continuing
     delay(100);
@@ -428,22 +449,7 @@ void Display::showDetailed(const std::vector<String> &ssids, DeauthDetector &det
     drawFooter();
 }
 
-void Display::nextView()
-{
-    switch (currentView)
-    {
-    case VIEW_DASHBOARD:
-        currentView = VIEW_LIVE_LOG;
-        break;
-    case VIEW_LIVE_LOG:
-        currentView = VIEW_DETAILED;
-        detailedPageIndex = 0;
-        break;
-    case VIEW_DETAILED:
-        currentView = VIEW_DASHBOARD;
-        break;
-    }
-}
+// nextView() removed — navigation is now handled by the main menu (see showMenu/menuUp/menuDown)
 
 void Display::nextDetailedPage(int maxIndex)
 {

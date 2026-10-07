@@ -4,7 +4,6 @@
 #include <FastLED.h>
 
 // Pin definitions for M5 Cardputer
-#define BUZZER_PIN 2
 #define LED_PIN 21
 #define NUM_LEDS 1
 #define LED_BRIGHTNESS 64
@@ -18,9 +17,6 @@ AlertManager::AlertManager(HardwareConfig &config)
 
 void AlertManager::begin()
 {
-    pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW);
-
     // Initialize LED (SK6812)
     FastLED.addLeds<SK6812, LED_PIN, GRB>(leds, NUM_LEDS);
     FastLED.setBrightness(LED_BRIGHTNESS);
@@ -35,25 +31,32 @@ void AlertManager::triggerAlert()
     alertStartTime = millis();
     lastPacketTime = millis();
 
-    // Sound buzzer
+    // Buzzer removed: alert is now signaled via blinking red LED only
     setBuzzer(true);
-
-    // Set LED to red
-    setLED(0xFF0000);
 
     // Start LED countdown
     ledCountdownActive = true;
     ledTimer = millis();
 
-    logger.debugPrintln("Alert triggered!");
+    logger.debugPrintln("Alert triggered! (LED signal)");
 }
 
 void AlertManager::update()
 {
-    // Handle buzzer duration
-    if (alertActive && (millis() - alertStartTime) > hwConfig.buzzer_duration_ms)
+    // Handle LED alert-blink duration (replaces buzzer timing)
+    if (alertActive)
     {
-        setBuzzer(false);
+        unsigned long sinceAlert = millis() - alertStartTime;
+        if (sinceAlert > hwConfig.buzzer_duration_ms)
+        {
+            setBuzzer(false);
+        }
+        else
+        {
+            // Blink red every 150ms while alert window is active
+            bool on = ((millis() / 150) % 2) == 0;
+            setLED(on ? 0xFF0000 : 0x000000);
+        }
     }
 
     // Handle LED countdown
@@ -85,13 +88,16 @@ void AlertManager::update()
 
 void AlertManager::setBuzzer(bool state)
 {
+    // Buzzer hardware removed. Kept as the LED-signal entry point so callers
+    // (and the public API) don't need to change: true = alert LED active,
+    // false = clear the alert LED.
     if (state)
     {
-        M5Cardputer.Speaker.tone(hwConfig.buzzer_freq); // noTone
+        setLED(0xFF0000);
     }
     else
     {
-        M5Cardputer.Speaker.end(); // noTone
+        setLED(0x000000);
     }
 }
 

@@ -3,7 +3,7 @@
 #include "WiFiManager.h"
 #include "DeauthDetector.h"
 #include "Display.h"
-#include "WebPortal.h"
+#include "GifPlayer.h"
 #include "Logger.h"
 #include "APIReporter.h"
 #include "AlertManager.h"
@@ -20,7 +20,7 @@ ConfigManager configManager;
 WiFiManager* wifiManager = nullptr;
 DeauthDetector detector;
 Display display;
-WebPortal* webPortal = nullptr;
+GifPlayer gifPlayer;
 APIReporter* apiReporter = nullptr;
 AlertManager* alertManager = nullptr;
 
@@ -31,8 +31,24 @@ unsigned long goButtonPressTime = 0;
 bool goButtonPressed = false;
 size_t lastEventCount = 0;
 
-// Define the specific pins used by the M5Cardputer for the SD card
+// Buzzer wurde entfernt: Alerts werden jetzt ausschliesslich per LED signalisiert.
+// Burst-Debounce bleibt bestehen, damit das normale periodische Router-Deauth
+// (alle 2-3h) keinen Alert ausloest - erst ein echter Burst tut das.
+#define BURST_THRESHOLD_COUNT 2
+#define BURST_WINDOW_MS 4000
+static unsigned long recentEventTimes[BURST_THRESHOLD_COUNT];
+static size_t recentEventHead = 0;
+static size_t recentEventFill = 0;
 
+// Esc-Taste: Das Cardputer hat keine dedizierte Esc-Taste, daher wird
+// konventionell die Backtick-Taste (`, oben links) dafuer verwendet - geht
+// von jedem Menuepunkt zurueck ins Hauptmenue.
+#define ESC_KEY_CHAR '`'
+// Up/Down fuer die Menuenavigation (Cardputer-Arrow-Emulation).
+#define MENU_UP_CHAR ';'
+#define MENU_DOWN_CHAR '.'
+
+// Define the specific pins used by the M5Cardputer for the SD card
 #define SD_SPI_SCK_PIN 40
 #define SD_SPI_MISO_PIN 39
 #define SD_SPI_MOSI_PIN 14
@@ -44,22 +60,20 @@ void enterMonitorMode();
 void handleConfigMode();
 void handleMonitorMode();
 void updateDisplay();
+bool keyStateHasChar(const Keyboard_Class::KeysState &status, char c);
 
 void setup() {
-    // Initialize M5Cardputer
     auto cfg = M5.config();
     M5Cardputer.begin(cfg, true);
-    
+
     Serial.begin(115200);
     Serial.println("\n\n=== M5 Cardputer Deauth Detector ===");
-    Serial.println("Firmware v" FIRMWARE_VERSION);    
+    Serial.println("Firmware v" FIRMWARE_VERSION);
 
-    // Initialize display
     display.begin();
-    display.showStartup();  // Show basic startup first, animated intro after config loads
+    display.showStartup();
     SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
 
-    // Initialize SD card
     if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000)) {
         Serial.println("ERROR: SD Card initialization failed!");
         M5Cardputer.Display.fillScreen(RED);
@@ -69,7 +83,6 @@ void setup() {
     }
     Serial.println("SD Card initialized");
 
-    // Create /deauthdetector directory if it doesn't exist
     if (!SD.exists("/deauthdetector")) {
         if (!SD.mkdir("/deauthdetector")) {
             Serial.println("Failed to create /deauthdetector directory");
@@ -77,55 +90,47 @@ void setup() {
             while (1) delay(1000);
         }
     }
-    
-    // Load configuration
+
     if (!configManager.loadConfig()) {
         Serial.println("Configuration not found or invalid");
         enterConfigMode();
         return;
     }
-    
-    // Get configuration
+
     AppConfig& config = configManager.getConfig();
-    
-    // Show animated intro or simple startup based on config
+
+    // Alert-Manager so frueh wie moeglich initialisieren, damit die Intro
+    // bereits ueber die LED (statt Buzzer) signalisieren kann.
+    alertManager = new AlertManager(config.hardware);
+    alertManager->begin();
+
     if (config.hardware.fancy_intro) {
-        display.showAnimatedIntro();
+        display.showAnimatedIntro(alertManager);
     } else {
-        delay(200);  // Simple startup already shown, just wait
+        delay(200);
     }
-    
-    // Set config for logger (enables debug file logging if configured)
+
     logger.setConfig(&config);
-    // Initialize logger
     if (!logger.begin()) {
         logger.debugPrintln("Warning: Logger initialization failed");
     }
-    
-    // Initialize managers
-    alertManager = new AlertManager(config.hardware);
-    alertManager->begin();
+
     wifiManager = new WiFiManager(config.wifi);
-    apiReporter = new APIReporter(config.api);    
-    
-    // Connect to WiFi for time sync
-    display.clearScreen();    
+    apiReporter = new APIReporter(config.api);
+
+    display.clearScreen();
     M5Cardputer.Display.setCursor(10, 60);
     M5Cardputer.Display.println("Connecting to WiFi... "+config.wifi.sta_ssid);
-    
-    // Set LED to yellow during WiFi connection
+
     alertManager->setStatusConnecting();
-    
+
     if (wifiManager->connectSTA()) {
-        // Sync time
         M5Cardputer.Display.println("Syncing time...");
         alertManager->setStatusSyncing();
         wifiManager->syncNTP(config.ntp);
-        
-        // Turn off LED after successful time sync
+
         alertManager->setStatusReady();
-        
-        // Disconnect from WiFi
+
         wifiManager->disconnect();
         M5Cardputer.Display.println("Disconnected");
     } else {
@@ -133,220 +138,191 @@ void setup() {
         alertManager->setStatusReady();
     }
 
-    // Initialize detector with LED scanning indicator
-    alertManager->setStatusScanning();    
+    alertManager->setStatusScanning();
     delay(1000);
-    
-  
-    
 
     detector.begin(config.detection.protected_ssids, config.detection);
     alertManager->setStatusReady();
-    
-    // Enter monitor mode
+
     enterMonitorMode();
 }
 
 void loop() {
     M5Cardputer.update();
-    
+
     switch (currentState) {
         case STATE_CONFIG_MODE:
             handleConfigMode();
             break;
-            
+
         case STATE_MONITOR_MODE:
             handleMonitorMode();
             break;
-            
+
         default:
             break;
     }
 }
 
+// Es gibt keine Web-UI mehr (Sicherheitsflaeche entfernt). Die Konfiguration
+// erfolgt ausschliesslich ueber die JSON-Datei auf der SD-Karte
+// (/deauthdetector/deauthconfig.txt) - die Bildschirmanzeige reicht als
+// Rueckmeldung. "Config Mode" zeigt nur noch einen Hinweis an.
 void enterConfigMode() {
-    logger.debugPrintln("Entering Config Mode");
+    logger.debugPrintln("Entering Config Mode (SD-card only, no web UI)");
     currentState = STATE_CONFIG_MODE;
-    
-    // Stop monitoring if active
+
     detector.stopMonitoring();
-    
-    // Start AP mode
-    wifiManager->startAP("M5-DeauthDetector");
-    
-    // Start web portal
-    webPortal = new WebPortal(&configManager);
-    webPortal->begin(true);
-    
-    // Update display
+
     display.showConfigMode();
 }
 
 void enterMonitorMode() {
     logger.debugPrintln("Entering Monitor Mode");
     currentState = STATE_MONITOR_MODE;
-    
-    // Stop web portal if active
-    if (webPortal) {
-        webPortal->stop();
-        delete webPortal;
-        webPortal = nullptr;
-    }
-    
-    // Stop AP mode
-    if (wifiManager) {
-        wifiManager->stopAP();
-    }
-    
-    // Start monitoring
+
     detector.startMonitoring();
-    
-    // Update display and wait 5 seconds or until Enter is pressed
-    display.showMonitoring();
-    
-    unsigned long displayStart = millis();
-    bool enterPressed = false;
-    
-    while ((millis() - displayStart < 5000) && !enterPressed) {
-        M5Cardputer.update();
-        
-        if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
-            Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
-            if (status.enter) {
-                enterPressed = true;
-                logger.debugPrintln("Enter pressed - skipping monitoring display");
-            }
-        }
-        
-        delay(50); // Small delay to prevent excessive CPU usage
-    }
-    
+
+    display.setView(VIEW_MENU);
+    updateDisplay();
+
     lastReportTime = millis();
     lastDisplayUpdate = millis();
 }
 
 void handleConfigMode() {
-    // Handle web portal
-    if (webPortal) {
-        webPortal->handle();
-        
-        // Check for timeout
-        if (webPortal->hasTimedOut()) {
-            logger.debugPrintln("Config mode timeout - returning to monitor mode");
-            enterMonitorMode();
-        }
-    }
-    
-    // Check for Enter key to exit config mode
+    // Kein Web-Portal mehr zu bedienen - Enter oder Esc bringt zurueck ins
+    // Monitoring, sobald die SD-Config von Hand aktualisiert wurde (Reboot
+    // laedt sie dann automatisch neu).
     if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
         Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
-        if (status.enter) {
+        if (status.enter || keyStateHasChar(status, ESC_KEY_CHAR)) {
             enterMonitorMode();
         }
     }
 }
 
+bool keyStateHasChar(const Keyboard_Class::KeysState &status, char c) {
+    for (char k : status.word) {
+        if (k == c) return true;
+    }
+    return false;
+}
+
 void handleMonitorMode() {
     AppConfig& config = configManager.getConfig();
-    
-    // Update channel hopping
+
     detector.updateChannelHop();
-    
-    // Update alert manager
+
     if (alertManager) {
         alertManager->update();
     }
-    
-    // Check for new deauth events
+
     std::vector<DeauthEvent> events = detector.getEvents();
-    
+
     if (!events.empty()) {
-        // Trigger alert whenever new events arrived since last check
-        if (alertManager && events.size() > lastEventCount) {
-            alertManager->triggerAlert();
+        if (events.size() > lastEventCount) {
+            size_t newEvents = events.size() - lastEventCount;
+            unsigned long now = millis();
+
+            for (size_t i = 0; i < newEvents; i++) {
+                recentEventTimes[recentEventHead] = now;
+                recentEventHead = (recentEventHead + 1) % BURST_THRESHOLD_COUNT;
+                if (recentEventFill < BURST_THRESHOLD_COUNT) recentEventFill++;
+            }
+
+            if (recentEventFill >= BURST_THRESHOLD_COUNT) {
+                size_t oldestIdx = recentEventHead;
+                unsigned long oldestTime = recentEventTimes[oldestIdx];
+                if (alertManager && (now - oldestTime) <= BURST_WINDOW_MS) {
+                    alertManager->triggerAlert();
+                    recentEventFill = 0;
+                }
+            }
         }
         lastEventCount = events.size();
-        
-        // Log events
+
         for (const DeauthEvent& event : events) {
             logger.logEvent(event);
         }
     }
-    
-    // Handle reporting interval
+
     unsigned long currentTime = millis();
     if (currentTime - lastReportTime >= (config.detection.reporting_interval_seconds * 1000)) {
         if (detector.hasEvents()) {
             std::vector<DeauthEvent> reportEvents = detector.getEvents();
-            
-            // Stop monitoring temporarily
+
             detector.stopMonitoring();
-            
-            // Connect to WiFi
+
             if (wifiManager->connectSTA()) {
-                // Send to API
                 if (apiReporter) {
                     apiReporter->sendBatch(reportEvents);
                 }
-                
-                // Disconnect
                 wifiManager->disconnect();
             }
-            
-            // Clear events after reporting
+
             detector.clearEvents();
             lastEventCount = 0;
-            
-            // Resume monitoring
+
             detector.startMonitoring();
         }
-        
+
         lastReportTime = currentTime;
     }
-    
-    // Update display periodically
+
     if (currentTime - lastDisplayUpdate >= 1000) {
         updateDisplay();
         lastDisplayUpdate = currentTime;
     }
-    
-    // Check for keyboard input
+
+    // Keyboard handling: Menu navigation + Esc-back is now consistent across
+    // every view (Dashboard / Live Log / Detailed / Gif).
     if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
         Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
-        
-        // Enter key to cycle views
-        if (status.enter) {
-            display.nextView();
-            updateDisplay();
-        }
-        
-        // Left/Right keys for detailed view navigation
-        if (display.getCurrentView() == VIEW_DETAILED) {
-            // Check for left arrow (n) or right arrow (m)
-            if (!status.word.empty()) {
-                String keyStr = "";
-                for (char c : status.word) {
-                    keyStr += c;
+        DisplayView view = display.getCurrentView();
+
+        if (view == VIEW_MENU) {
+            if (status.enter) {
+                DisplayView target = display.menuIndexToView(display.getMenuIndex());
+                display.setView(target);
+                if (target == VIEW_GIF) {
+                    // Blocking playback loop; returns here once Esc is pressed inside it.
+                    gifPlayer.playUntilEsc();
+                    display.setView(VIEW_MENU);
                 }
-                
-                if (keyStr == "n") { // Left arrow
-                    display.prevDetailedPage(config.detection.protected_ssids.size());
-                    updateDisplay();
-                } else if (keyStr == "m") { // Right arrow
-                    display.nextDetailedPage(config.detection.protected_ssids.size());
-                    updateDisplay();
+                updateDisplay();
+            } else if (keyStateHasChar(status, MENU_UP_CHAR)) {
+                display.menuUp();
+                updateDisplay();
+            } else if (keyStateHasChar(status, MENU_DOWN_CHAR)) {
+                display.menuDown();
+                updateDisplay();
+            }
+        } else {
+            // In any other view: Esc always goes back to the main menu.
+            if (keyStateHasChar(status, ESC_KEY_CHAR)) {
+                display.setView(VIEW_MENU);
+                updateDisplay();
+            } else if (view == VIEW_DETAILED) {
+                if (!status.word.empty()) {
+                    if (keyStateHasChar(status, 'n')) { // Left arrow
+                        display.prevDetailedPage(config.detection.protected_ssids.size());
+                        updateDisplay();
+                    } else if (keyStateHasChar(status, 'm')) { // Right arrow
+                        display.nextDetailedPage(config.detection.protected_ssids.size());
+                        updateDisplay();
+                    }
                 }
             }
         }
     }
-    
-    // Check for Go button hold (config mode)
+
+    // Go-Button halten -> Config-Hinweisbildschirm (kein Web-Server mehr)
     if (digitalRead(0) == LOW) { // G0 button
         if (!goButtonPressed) {
             goButtonPressed = true;
             goButtonPressTime = millis();
         } else {
-            // Check if held for 2 seconds
             if (millis() - goButtonPressTime >= 2000) {
                 enterConfigMode();
                 goButtonPressed = false;
@@ -360,18 +336,27 @@ void handleMonitorMode() {
 void updateDisplay() {
     AppConfig& config = configManager.getConfig();
     std::vector<DeauthEvent> events = detector.getEvents();
-    
+
     switch (display.getCurrentView()) {
+        case VIEW_MENU:
+            display.showMenu();
+            break;
+
         case VIEW_DASHBOARD:
             display.showDashboard(config.detection.protected_ssids, detector);
             break;
-            
+
         case VIEW_LIVE_LOG:
             display.showLiveLog(events);
             break;
-            
+
         case VIEW_DETAILED:
             display.showDetailed(config.detection.protected_ssids, detector);
+            break;
+
+        case VIEW_GIF:
+        case VIEW_CONFIG_INFO:
+            // Handled by their own blocking loops (gifPlayer / config screen).
             break;
     }
 }
