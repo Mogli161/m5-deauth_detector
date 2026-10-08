@@ -13,7 +13,8 @@ CRGB leds[NUM_LEDS];
 
 AlertManager::AlertManager(HardwareConfig &config)
     : hwConfig(config), alertActive(false), alertStartTime(0),
-      lastPacketTime(0), ledTimer(0), ledCountdownActive(false) {}
+      lastPacketTime(0), ledTimer(0), ledCountdownActive(false),
+      alertColor(0xFF0000) {}
 
 void AlertManager::begin()
 {
@@ -25,20 +26,25 @@ void AlertManager::begin()
     M5Cardputer.Display.setBrightness(hwConfig.screen_brightness);
 }
 
-void AlertManager::triggerAlert()
+void AlertManager::triggerAlert(uint32_t color)
 {
     alertActive = true;
     alertStartTime = millis();
     lastPacketTime = millis();
+    alertColor = color;
 
-    // Buzzer removed: alert is now signaled via blinking red LED only
+    // Buzzer removed: alert is now signaled via blinking LED only, color
+    // keyed to the detector that fired (red=deauth, orange=beacon-flood,
+    // magenta=evil-twin, cyan=karma, white=pnl-leak).
     setBuzzer(true);
 
     // Start LED countdown
     ledCountdownActive = true;
     ledTimer = millis();
 
-    logger.debugPrintln("Alert triggered! (LED signal)");
+    char buf[48];
+    snprintf(buf, sizeof(buf), "Alert triggered! (LED signal, color 0x%06X)", color);
+    logger.debugPrintln(buf);
 }
 
 void AlertManager::update()
@@ -53,9 +59,9 @@ void AlertManager::update()
         }
         else
         {
-            // Blink red every 150ms while alert window is active
+            // Blink the alert's color every 150ms while the window is active
             bool on = ((millis() / 150) % 2) == 0;
-            setLED(on ? 0xFF0000 : 0x000000);
+            setLED(on ? alertColor : 0x000000);
         }
     }
 
@@ -89,11 +95,11 @@ void AlertManager::update()
 void AlertManager::setBuzzer(bool state)
 {
     // Buzzer hardware removed. Kept as the LED-signal entry point so callers
-    // (and the public API) don't need to change: true = alert LED active,
-    // false = clear the alert LED.
+    // (and the public API) don't need to change: true = alert LED active
+    // (in the current alert's color), false = clear the alert LED.
     if (state)
     {
-        setLED(0xFF0000);
+        setLED(alertColor);
     }
     else
     {

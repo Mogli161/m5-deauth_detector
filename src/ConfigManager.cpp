@@ -91,6 +91,35 @@ bool ConfigManager::loadConfig(const char* filename) {
         config.detection.channel_hop_interval_ms = detection["channel_hop_interval_ms"] | DEFAULT_CHANNEL_HOP_INTERVAL_MS;
     }
     
+    // Parse WifiIDS config (beacon-flood/evil-twin/karma/pnl-leak)
+    if (doc.containsKey("wifi_ids")) {
+        JsonObject ids = doc["wifi_ids"];
+        config.wifi_ids.enabled = ids["enabled"] | false;
+        config.wifi_ids.beacon_window_sec = ids["beacon_window_sec"] | 60;
+        config.wifi_ids.beacon_new_bssid_burst = ids["beacon_new_bssid_burst"] | 6;
+        config.wifi_ids.beacon_la_ratio = ids["beacon_la_ratio"] | 0.6f;
+        config.wifi_ids.karma_window_sec = ids["karma_window_sec"] | 120;
+        config.wifi_ids.karma_distinct_threshold = ids["karma_distinct_threshold"] | 2;
+        config.wifi_ids.pnl_window_sec = ids["pnl_window_sec"] | 120;
+        config.wifi_ids.pnl_distinct_threshold = ids["pnl_distinct_threshold"] | 3;
+        config.wifi_ids.refractory_sec = ids["refractory_sec"] | 300;
+
+        config.wifi_ids.allowlist.clear();
+        if (ids.containsKey("allowlist")) {
+            // allowlist is a JSON object: { "SSID": ["BSSID1", "BSSID2"], ... }
+            JsonObject allow = ids["allowlist"];
+            for (JsonPair kv : allow) {
+                AllowedNetwork net;
+                net.ssid = String(kv.key().c_str());
+                JsonArray bssids = kv.value().as<JsonArray>();
+                for (JsonVariant b : bssids) {
+                    net.bssids.push_back(b.as<String>());
+                }
+                config.wifi_ids.allowlist.push_back(net);
+            }
+        }
+    }
+    
     // Parse API config
     if (doc.containsKey("api")) {
         JsonObject api = doc["api"];
@@ -148,6 +177,25 @@ bool ConfigManager::saveConfig(const char* filename) {
     detection["detect_all_deauth"] = config.detection.detect_all_deauth;
     detection["channel_scan_time_ms"] = config.detection.channel_scan_time_ms;
     detection["channel_hop_interval_ms"] = config.detection.channel_hop_interval_ms;
+    
+    // WifiIDS config
+    JsonObject ids = doc.createNestedObject("wifi_ids");
+    ids["enabled"] = config.wifi_ids.enabled;
+    ids["beacon_window_sec"] = config.wifi_ids.beacon_window_sec;
+    ids["beacon_new_bssid_burst"] = config.wifi_ids.beacon_new_bssid_burst;
+    ids["beacon_la_ratio"] = config.wifi_ids.beacon_la_ratio;
+    ids["karma_window_sec"] = config.wifi_ids.karma_window_sec;
+    ids["karma_distinct_threshold"] = config.wifi_ids.karma_distinct_threshold;
+    ids["pnl_window_sec"] = config.wifi_ids.pnl_window_sec;
+    ids["pnl_distinct_threshold"] = config.wifi_ids.pnl_distinct_threshold;
+    ids["refractory_sec"] = config.wifi_ids.refractory_sec;
+    JsonObject allow = ids.createNestedObject("allowlist");
+    for (const AllowedNetwork& net : config.wifi_ids.allowlist) {
+        JsonArray bssids = allow.createNestedArray(net.ssid);
+        for (const String& b : net.bssids) {
+            bssids.add(b);
+        }
+    }
     
     // API config
     JsonObject api = doc.createNestedObject("api");

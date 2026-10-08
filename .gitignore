@@ -6,3 +6,4 @@
 config.txt
 logs/
 output/deauthdetector-*.bin
+pio_venv/

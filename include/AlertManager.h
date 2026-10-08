@@ -8,7 +8,11 @@ class AlertManager {
 public:
     AlertManager(HardwareConfig& config);
     void begin();
-    void triggerAlert();
+    // color defaults to red (0xFF0000) for backward compat with plain deauth
+    // alerts; WifiIDS alert types pass a distinct color so the LED itself
+    // tells apart deauth vs. beacon-flood vs. evil-twin vs. KARMA vs. PNL —
+    // no sound is ever used for any alert, LED color coding only.
+    void triggerAlert(uint32_t color = 0xFF0000);
     void update();
     bool isAlerting() { return alertActive; }    
     void setBuzzer(bool state);
@@ -25,6 +29,7 @@ private:
     unsigned long lastPacketTime;
     unsigned long ledTimer;
     bool ledCountdownActive;
+    uint32_t alertColor; // color of the currently-active alert blink
     
 };
 

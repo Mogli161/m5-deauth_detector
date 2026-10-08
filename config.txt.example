@@ -18,6 +18,20 @@
     "channel_scan_time_ms": 100,
     "channel_hop_interval_ms": 75
   },
+  "wifi_ids": {
+    "enabled": true,
+    "beacon_window_sec": 60,
+    "beacon_new_bssid_burst": 6,
+    "beacon_la_ratio": 0.6,
+    "karma_window_sec": 120,
+    "karma_distinct_threshold": 2,
+    "pnl_window_sec": 120,
+    "pnl_distinct_threshold": 3,
+    "refractory_sec": 300,
+    "allowlist": {
+      "Home_WiFi": ["AA:BB:CC:DD:EE:FF"]
+    }
+  },
   "api": {
     "endpoint_url": "https://your-api.com/v1/alerts",
     "custom_header_name": "X-API-KEY",

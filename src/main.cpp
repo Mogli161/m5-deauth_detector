@@ -2,11 +2,13 @@
 #include "ConfigManager.h"
 #include "WiFiManager.h"
 #include "DeauthDetector.h"
+#include "WifiIDSDetector.h"
 #include "Display.h"
 #include "GifPlayer.h"
 #include "Logger.h"
 #include "APIReporter.h"
 #include "AlertManager.h"
+#include "SerialConsole.h"
 
 // Application state
 enum AppState {
@@ -19,10 +21,19 @@ enum AppState {
 ConfigManager configManager;
 WiFiManager* wifiManager = nullptr;
 DeauthDetector detector;
+WifiIDSDetector wifiIdsDetector;
 Display display;
 GifPlayer gifPlayer;
 APIReporter* apiReporter = nullptr;
 AlertManager* alertManager = nullptr;
+
+// LED colors per alert type — no sound is ever used for any alert, every
+// detector gets its own color so the LED alone tells them apart at a glance.
+#define COLOR_DEAUTH       0xFF0000  // red
+#define COLOR_BEACON_FLOOD 0xFFA500  // orange
+#define COLOR_EVIL_TWIN    0xFF00FF  // magenta
+#define COLOR_KARMA        0x00FFFF  // cyan
+#define COLOR_PNL_LEAK     0xFFFFFF  // white
 
 AppState currentState = STATE_INIT;
 unsigned long lastReportTime = 0;
@@ -30,6 +41,16 @@ unsigned long lastDisplayUpdate = 0;
 unsigned long goButtonPressTime = 0;
 bool goButtonPressed = false;
 size_t lastEventCount = 0;
+size_t lastWifiIdsEventCount = 0;
+
+// Maps a WifiIDSEvent detector name to its signaling LED color.
+static uint32_t colorForIdsDetector(const String& detector) {
+    if (detector == "beacon_flood") return COLOR_BEACON_FLOOD;
+    if (detector == "evil_twin") return COLOR_EVIL_TWIN;
+    if (detector == "karma") return COLOR_KARMA;
+    if (detector == "pnl_leak") return COLOR_PNL_LEAK;
+    return COLOR_DEAUTH; // fallback, should not normally be hit
+}
 
 // Buzzer wurde entfernt: Alerts werden jetzt ausschliesslich per LED signalisiert.
 // Burst-Debounce bleibt bestehen, damit das normale periodische Router-Deauth
@@ -69,6 +90,7 @@ void setup() {
     Serial.begin(115200);
     Serial.println("\n\n=== M5 Cardputer Deauth Detector ===");
     Serial.println("Firmware v" FIRMWARE_VERSION);
+    serialConsole.begin();
 
     display.begin();
     display.showStartup();
@@ -142,6 +164,9 @@ void setup() {
     delay(1000);
 
     detector.begin(config.detection.protected_ssids, config.detection);
+    wifiIdsDetector.begin(config.wifi_ids);
+    DeauthDetector::attachWifiIDS(&wifiIdsDetector);
+    serialConsole.attach(&detector, &wifiIdsDetector, &config);
     alertManager->setStatusReady();
 
     enterMonitorMode();
@@ -149,6 +174,7 @@ void setup() {
 
 void loop() {
     M5Cardputer.update();
+    serialConsole.poll();
 
     switch (currentState) {
         case STATE_CONFIG_MODE:
@@ -213,6 +239,7 @@ void handleMonitorMode() {
     AppConfig& config = configManager.getConfig();
 
     detector.updateChannelHop();
+    wifiIdsDetector.update();
 
     if (alertManager) {
         alertManager->update();
@@ -235,7 +262,7 @@ void handleMonitorMode() {
                 size_t oldestIdx = recentEventHead;
                 unsigned long oldestTime = recentEventTimes[oldestIdx];
                 if (alertManager && (now - oldestTime) <= BURST_WINDOW_MS) {
-                    alertManager->triggerAlert();
+                    alertManager->triggerAlert(COLOR_DEAUTH);
                     recentEventFill = 0;
                 }
             }
@@ -247,22 +274,40 @@ void handleMonitorMode() {
         }
     }
 
+    // WifiIDS events (beacon-flood/evil-twin/karma/pnl-leak) fire the alert
+    // LED immediately in their own color — no burst-debounce needed here,
+    // each detector already has its own refractory window internally.
+    std::vector<WifiIDSEvent> idsEvents = wifiIdsDetector.getEvents();
+    if (idsEvents.size() > lastWifiIdsEventCount) {
+        const WifiIDSEvent& newest = idsEvents.back();
+        if (alertManager) {
+            alertManager->triggerAlert(colorForIdsDetector(newest.detector));
+        }
+    }
+    lastWifiIdsEventCount = idsEvents.size();
+
     unsigned long currentTime = millis();
     if (currentTime - lastReportTime >= (config.detection.reporting_interval_seconds * 1000)) {
-        if (detector.hasEvents()) {
+        bool haveDeauthEvents = detector.hasEvents();
+        bool haveIdsEvents = wifiIdsDetector.hasEvents();
+        if (haveDeauthEvents || haveIdsEvents) {
             std::vector<DeauthEvent> reportEvents = detector.getEvents();
+            std::vector<WifiIDSEvent> reportIdsEvents = wifiIdsDetector.getEvents();
 
             detector.stopMonitoring();
 
             if (wifiManager->connectSTA()) {
                 if (apiReporter) {
-                    apiReporter->sendBatch(reportEvents);
+                    if (haveDeauthEvents) apiReporter->sendBatch(reportEvents);
+                    if (haveIdsEvents) apiReporter->sendIdsBatch(reportIdsEvents);
                 }
                 wifiManager->disconnect();
             }
 
             detector.clearEvents();
+            wifiIdsDetector.clearEvents();
             lastEventCount = 0;
+            lastWifiIdsEventCount = 0;
 
             detector.startMonitoring();
         }

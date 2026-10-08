@@ -91,9 +91,32 @@ pio device monitor
 Stewart Moss © 2026
 
 Fork maintained by Mogli161. Changes in commit `b4d61f0` ("Replace buzzer with LED
-signaling, remove web UI, add menu + embedded GIF view") were implemented with AI
-assistance (Claude, via a Hermes agent session) based on the maintainer's requirements;
-see that commit's `Co-authored-by` trailer.
+signaling, remove web UI, add menu + embedded GIF view") and the WifiIDS/SerialConsole
+commit adding beacon-flood/evil-twin/KARMA/PNL-leak detection and a USB serial CLI were
+implemented with AI assistance (Claude, via a Hermes agent session) based on the
+maintainer's requirements; see each commit's `Co-authored-by` trailer.
+
+## WifiIDS detector (beacon-flood / evil-twin / KARMA / PNL-leak)
+
+In addition to deauth/disassoc detection, this fork includes a passive WiFi-IDS
+(`WifiIDSDetector`, ported from a subset of a private passive 802.11 monitor) that also
+flags:
+
+- **Beacon-flood / fake-AP storm** — many new BSSIDs appearing in a short window
+- **Evil twin** — your SSID beaconed from an unexpected/un-allowlisted BSSID
+- **KARMA/MANA** — a rogue AP answering probe-requests for SSIDs it never beacons
+- **PNL leak** — a client broadcasting its saved-network list via directed probes
+
+Enable it in `deauthconfig.txt` under `"wifi_ids": { "enabled": true, ... }` (see
+`config.txt.example`). Each detector signals via a distinct LED color — **never a sound**,
+by design: red=deauth, orange=beacon-flood, magenta=evil-twin, cyan=karma, white=pnl-leak.
+Alerts are reported to the same `api.endpoint_url` with an `event_type` field.
+
+## USB serial console
+
+A tiny line-based text CLI is available over the same USB serial port used for
+flashing/logging (115200 baud) — useful for scripted/agent access without needing
+`esptool` flash-reads. Commands: `HELP`, `VERSION`, `STATUS`, `EVENTS`, `IDS`, `CLEAR`.
 
 ## License
 

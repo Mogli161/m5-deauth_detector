@@ -1,5 +1,6 @@
 #include "DeauthDetector.h"
 #include "Logger.h"
+#include "WifiIDSDetector.h"
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
 #include <WiFi.h>
@@ -7,6 +8,7 @@
 
 // Static instance for callback
 static DeauthDetector* detectorInstance = nullptr;
+static WifiIDSDetector* wifiIdsInstance = nullptr;
 static std::map<String, int> ssidPacketCounts;
 
 // Management frame structure
@@ -180,7 +182,32 @@ void DeauthDetector::packetHandler(void* buf, wifi_promiscuous_pkt_type_t type) 
         cap.timestamp  = time(nullptr);
 
         detectorInstance->rawHead = nextHead;
+    } else if (wifiIdsInstance && frameType == 0x00 &&
+               (frameSubtype == 0x08 || frameSubtype == 0x05 || frameSubtype == 0x04)) {
+        // Beacon (0x08) / probe-response (0x05) / probe-request (0x04) —
+        // forward the tagged-parameters region to the WifiIDS detector for
+        // beacon-flood/evil-twin/KARMA/PNL-leak analysis. Fixed params before
+        // the IEs are 12 bytes for beacon/probe-resp (timestamp+interval+
+        // capability), 0 for probe-req (which has no fixed fields).
+        size_t fixedParamLen = (frameSubtype == 0x04) ? 0 : 12;
+        size_t totalLen = pkt->rx_ctrl.sig_len;
+        size_t hdrLen = sizeof(wifi_ieee80211_mac_hdr_t);
+        if (totalLen > hdrLen + fixedParamLen) {
+            size_t bodyLen = totalLen - hdrLen;
+            const uint8_t* ie = ipkt->payload + fixedParamLen;
+            size_t ieLen = bodyLen - fixedParamLen;
+            // Sanity clamp: never trust sig_len beyond a generous cap, the
+            // 802.11 management frame body realistically never exceeds this.
+            if (ieLen > 1024) ieLen = 1024;
+            wifiIdsInstance->onManagementFrame(frameSubtype, hdr->addr2, hdr->addr3,
+                                                pkt->rx_ctrl.channel, pkt->rx_ctrl.rssi,
+                                                ie, ieLen);
+        }
     }
+}
+
+void DeauthDetector::attachWifiIDS(WifiIDSDetector* ids) {
+    wifiIdsInstance = ids;
 }
 
 void DeauthDetector::processRawEvents() {

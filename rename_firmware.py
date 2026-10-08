@@ -18,7 +18,7 @@ def copy_firmware(source, target, env):
     output_dir_name = output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    dest = f"{output_dir_name}\deauthdetector-{version}.bin"
+    dest = os.path.join(output_dir_name, f"deauthdetector-{version}.bin")
     print (f"*** Post Build Action: Version={version}\n")
     print (f"*** Post Build Action: Copy firmware.bin to '{dest}'\n")
     print(f"*** Output directory: {output_dir_name}\n") 

@@ -7,6 +7,8 @@
 #include <freertos/semphr.h>
 #include "Config.h"
 
+class WifiIDSDetector; // fwd decl, see attachWifiIDS()
+
 // Lightweight POD captured in ISR context — no heap allocations
 struct RawDeauthCapture {
     uint8_t addr2[6];   // sender MAC
@@ -41,6 +43,14 @@ public:
     DeauthEvent getLastEventForSSID(const String& ssid);
     int getChannelForSSID(const String& ssid);
     void updateChannelHop();
+    bool isMonitoring() { return monitoring; }
+
+    // Registers a WifiIDSDetector to also receive beacon/probe-req/probe-resp
+    // frames from the single shared promiscuous RX callback (ESP32 only
+    // allows one esp_wifi_set_promiscuous_rx_cb registration at a time, so
+    // this is how the beacon-flood/evil-twin/KARMA/PNL-leak detector gets
+    // its frames instead of registering its own).
+    static void attachWifiIDS(WifiIDSDetector* ids);
 
 private:
     std::vector<String> protectedSSIDs;
