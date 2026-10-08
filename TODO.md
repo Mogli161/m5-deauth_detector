@@ -1,5 +1,7 @@
 # TODO
 
+See [Issue #1](https://github.com/Mogli161/m5-deauth_detector/issues/1) (tracked there now).
+
 ## Menu: list individual defense modules + per-detector stats + dashboard overview
 
 The on-device menu (`Display`/`main.cpp` `VIEW_MENU`) currently has fixed entries
