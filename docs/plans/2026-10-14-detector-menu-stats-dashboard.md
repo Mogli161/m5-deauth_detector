@@ -12,7 +12,37 @@
 
 **Reference:** [Issue #1](https://github.com/Mogli161/m5-deauth_detector/issues/1), `TODO.md`
 
-**Decisions locked in:** Overview = menu entry 0 · session counts only (no boot counters) · `Detailed`/SSID paging retained · only detectors that can actually fire get a menu entry.
+**Decisions locked in:** Overview = menu entry 0 · session counts only (no boot counters) · `Detailed`/SSID paging retained · only detectors that can actually fire get a menu entry · **real arrow keys work, with `;`/`.` as fallback** · **a persistent key-hint ticker along the bottom edge in every view**.
+
+---
+
+## Keyboard findings (verified against M5Cardputer lib source)
+
+`Keyboard_Class::KeysState` exposes **native `up` / `down` / `left` / `right` bools** (`src/utility/Keyboard/Keyboard.h`). So arrow keys *can* be used — the existing code simply never looked at them.
+
+Two things the plan must account for:
+
+1. **Arrow keys only exist on the fn layer.** From the key map (`Keyboard.h:20-70`): `;` = fn+`↑`, `,` = fn+`←`, `.` = fn+`↓`, `/` = fn+`→`. The fn layer sets `status.up/down/left/right` and **returns early** (`Keyboard.cpp:154-222`) — so when fn is held, `status.word` stays empty and only the arrow bools are set. Without fn, the plain characters land in `status.word`.
+
+   → Consequence: `status.up || keyStateHasChar(status, ';')` is the correct up-check, and likewise for the others. Both paths must be accepted, or arrow keys silently do nothing.
+
+2. **`status.esc` is also fn-only** (`` ` `` = fn+Esc → `KEY_ESCAPE`, `Keyboard.h:20`). The current code checks `keyStateHasChar(status, '`')`, which works on the plain layer. After this change both must be accepted: `status.esc || keyStateHasChar(status, '`')`.
+
+**Pre-existing bug found while verifying:** `handleConfigMode()` (`main.cpp:225`) checks `status.enter || keyStateHasChar(status, ESC_KEY_CHAR)`. On the fn layer, `` ` `` produces `status.esc == true` with an **empty** `status.word` — so fn+Esc to leave config mode does nothing. Same class of bug as the menu. Task 0 fixes it alongside the rest.
+
+### The key-hint ticker
+
+Every view gets a persistent strip along the bottom edge showing its own bindings. Screen is 240×135; the existing `drawFooter()` uses `fillRect(0, 125, 240, 10, BLUE)` — 10px, too small for readable text. The ticker takes a 12px band at y=123 and replaces `drawFooter()`'s timestamp with a combined line where space allows.
+
+Binding map after this change (all verified):
+
+| Action | fn layer | plain layer |
+|---|---|---|
+| Menu up | `↑` (`status.up`) | `;` |
+| Menu down | `↓` (`status.down`) | `.` |
+| Page prev | `←` (`status.left`) | `n` |
+| Page next | `→` (`status.right`) | `m` |
+| Back / Esc | `Esc` (`status.esc`) | `` ` `` |
 
 ---
 
@@ -39,6 +69,165 @@ Wiring is complete end to end: `packetHandler` forwards beacon/probe-resp/probe-
 2. **`evil_twin` is inert at its real severity without an allowlist.** Its *critical* path (`:183-189`) only fires when the SSID **is** in `cfg.allowlist` and the BSSID is not trusted. With an empty allowlist it falls through to the *info* path (`:190-201`), which only reports *"SSID seen from N BSSIDs, add to allowlist to confirm"* — a hint, not a detection. So on a device with no allowlist, Evil-Twin produces noise, not alerts.
 
 **Limitation:** the live `config.txt` is gitignored and lives only on the Cardputer, so **which detectors are enabled on the running device cannot be determined from the repo**. The menu must therefore derive from runtime state (`canFire` / `isArmed` / counts) rather than a hardcoded list — that is precisely what `canFire()` in Task 2 provides.
+
+---
+
+## Task 0: Arrow-key support + persistent key-hint ticker
+
+**Objective:** Make real arrow keys work everywhere (fn layer), keep `;`/`.`/`n`/`m` as fallback, and show the current view's bindings in a bottom ticker. Also fixes the pre-existing fn+Esc bug in config mode.
+
+**Files:**
+- Modify: `include/Display.h`
+- Modify: `src/Display.cpp`
+- Modify: `src/main.cpp`
+
+**Step 1: Add arrow helpers in `main.cpp`**
+
+Replace `keyStateHasChar`'s neighbourhood (~line 231) with layer-agnostic checks:
+
+```cpp
+// The Cardputer has no dedicated arrow keys: they live on the fn layer
+// (";" = fn+Up, "," = fn+Left, "." = fn+Down, "/" = fn+Right), where the
+// library sets status.up/down/left/right and leaves status.word EMPTY
+// (Keyboard.cpp PASS 2 returns early). The plain characters land in
+// status.word instead. Accept both, or one of the two layers silently dies.
+static bool keyUp(const Keyboard_Class::KeysState& s) {
+    return s.up || keyStateHasChar(s, MENU_UP_CHAR);
+}
+static bool keyDown(const Keyboard_Class::KeysState& s) {
+    return s.down || keyStateHasChar(s, MENU_DOWN_CHAR);
+}
+static bool keyLeft(const Keyboard_Class::KeysState& s) {
+    return s.left || keyStateHasChar(s, 'n');
+}
+static bool keyRight(const Keyboard_Class::KeysState& s) {
+    return s.right || keyStateHasChar(s, 'm');
+}
+// Esc is fn-only too ("`" = fn+Esc -> status.esc, word stays empty).
+static bool keyEsc(const Keyboard_Class::KeysState& s) {
+    return s.esc || keyStateHasChar(s, ESC_KEY_CHAR);
+}
+```
+
+**Step 2: Fix `handleConfigMode()` (pre-existing bug)**
+
+`main.cpp:225` — fn+Esc currently does nothing because `status.word` is empty on the fn layer:
+
+```cpp
+        if (status.enter || keyEsc(status)) {
+            enterMonitorMode();
+        }
+```
+
+**Step 3: Rewrite the menu key handler to use the helpers**
+
+`main.cpp:339-345` becomes:
+
+```cpp
+            } else if (keyUp(status)) {
+                display.menuUp();
+                updateDisplay();
+            } else if (keyDown(status)) {
+                display.menuDown();
+                updateDisplay();
+            }
+```
+
+And the Esc branch (`main.cpp:348`):
+
+```cpp
+            if (keyEsc(status)) {
+```
+
+And the paging branch (`main.cpp:353-358`):
+
+```cpp
+            } else if (view == VIEW_DETAILED || view == VIEW_MODULE_STATS) {
+                if (!status.word.empty() || status.left || status.right) {
+                    if (keyLeft(status)) {
+                        if (view == VIEW_DETAILED) {
+                            display.prevDetailedPage(config.detection.protected_ssids.size());
+                        } else {
+                            display.moduleStatsPrevScope();
+                        }
+                        updateDisplay();
+                    } else if (keyRight(status)) {
+                        if (view == VIEW_DETAILED) {
+                            display.nextDetailedPage(config.detection.protected_ssids.size());
+                        } else {
+                            display.moduleStatsNextScope();
+                        }
+                        updateDisplay();
+                    }
+                }
+            }
+```
+
+Note the guard change: `!status.word.empty()` alone would reject the arrow path, since fn-layer presses leave `word` empty. Adding `|| status.left || status.right` covers it.
+
+**Step 4: Add the ticker to `Display`**
+
+In `include/Display.h`:
+
+```cpp
+    // Bottom-edge key-hint strip. Every view passes its own bindings so the
+    // legend always matches what the keys actually do in that view.
+    void drawKeyHints(const String& hints);
+```
+
+In `src/Display.cpp`, next to `drawFooter()`:
+
+```cpp
+// Key-hint ticker: a 12px band along the bottom edge. Replaces the bare
+// timestamp footer with the current view's bindings, so the legend is
+// always in sync with what the keys do here. 240x135 screen -> y=123.
+void Display::drawKeyHints(const String& hints) {
+    M5Cardputer.Display.fillRect(0, 123, 240, 12, 0x18C3);  // dark slate
+    M5Cardputer.Display.setTextColor(0x7BEF, BLACK);
+    M5Cardputer.Display.setCursor(3, 125);
+    M5Cardputer.Display.print(hints.substring(0, 38));  // ~38 chars at 6px
+}
+```
+
+**Step 5: Give every view its own hint string**
+
+Call `drawKeyHints(...)` where each view currently calls `drawFooter()`, with view-appropriate text:
+
+| View | Hint |
+|---|---|
+| Menu | `"^v select  Enter open"` |
+| Overview | `"Esc back"` |
+| Module stats | `"<> page  Esc back"` |
+| Detailed | `"<> page  Esc back"` |
+| Live Log | `"Esc back"` |
+| Config info | `"Enter/Esc continue"` |
+
+Use the ASCII forms the user can actually type on either layer (`^`/`v`/`<`/`>`), since the display font has no reliable arrow glyphs — the ticker describes the *action*, the keys are the fallback characters.
+
+In `showMenu()` specifically, replace the hardcoded hint line at y=122 with `drawKeyHints("^v select  Enter open")` so there is exactly one bottom band per view, not two.
+
+**Step 6: Adjust view heights**
+
+The ticker occupies y=123-135. Views that drew to y>120 (`showDashboard`'s `if (y > 120) break`, `showLiveLog`, `showDetailed`) must clamp to y ≤ 118 to avoid drawing under it. Grep and fix:
+
+```bash
+grep -n "y > 120\|y > 118\|y > 112" src/Display.cpp
+```
+
+**Step 7: Build and commit**
+
+Run: `pio run -e m5stack-stamps3`
+Expected: build succeeds
+
+```bash
+git add include/Display.h src/Display.cpp src/main.cpp
+git commit -m "feat: arrow-key support via fn layer + per-view key-hint ticker
+
+Fixes pre-existing bug: fn+Esc did nothing in config mode because the
+fn layer leaves status.word empty. Same class of bug affected menu
+navigation. All checks now accept both the fn-layer bools and the plain
+fallback characters."
+```
 
 ---
 
@@ -474,8 +663,9 @@ void Display::showMenu() {
     }
 
     M5Cardputer.Display.setTextColor(0x7BEF, BLACK);
-    M5Cardputer.Display.setCursor(4, 122);
-    M5Cardputer.Display.print("Up/Down sel, Enter open, Esc back");
+    // Bottom band is the shared key-hint ticker (see Task 0); every view
+    // passes its own bindings so the legend matches the keys here.
+    drawKeyHints("^v select  Enter open");
 }
 ```
 
@@ -558,7 +748,7 @@ void Display::showOverview(const std::vector<DetectorModule>&mods) {
         y += 14;
     }
 
-    drawFooter();
+    drawKeyHints("Esc back");
 }
 ```
 
@@ -638,11 +828,12 @@ void Display::showModuleStats(const DetectorModule&mod) {
         }
     }
 
+    // Bottom band is the shared key-hint ticker (Task 0), so the legend
+    // and the actual bindings can never drift apart.
     M5Cardputer.Display.setTextColor(0x7BEF, BLACK);
-    M5Cardputer.Display.setCursor(5, 122);
+    M5Cardputer.Display.setCursor(5, 114);
     M5Cardputer.Display.print(modIsArmed(mod) ? "monitoring" : "not armed");
-    M5Cardputer.Display.setCursor(170, 122);
-    M5Cardputer.Display.print("Esc=back");
+    drawKeyHints("<> page  Esc back");
 }
 
 void Display::moduleStatsNextScope() { moduleStatsPage++; }
@@ -821,6 +1012,10 @@ On real hardware:
 - [ ] Overview shows all detectors with armed state, count, and age (`--` when never fired)
 - [ ] Selecting a detector opens its stats: session count, last timestamp, last target
 - [ ] Deauth stats page through protected SSIDs with `n`/`m`; per-SSID count is correct
+- [ ] **Arrow keys work in every view** — fn+`↑`/`↓` navigate the menu, fn+`←`/`→` page, fn+Esc goes back
+- [ ] **`;`/`.`/`n`/`m` still work** — the fallback layer is not broken by the arrow change
+- [ ] **fn+Esc leaves config mode** (the pre-existing bug is fixed)
+- [ ] Every view shows a bottom ticker with its own bindings; no view draws under it
 - [ ] `Esc` returns to the menu from every view
 - [ ] A deauth burst increments the session count
 - [ ] Each IDS detector shows only its own events, never another's
