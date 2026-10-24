@@ -74,6 +74,25 @@ Wiring is complete end to end: `packetHandler` forwards beacon/probe-resp/probe-
 
 ## Task 0: Arrow-key support + persistent key-hint ticker
 
+> **WARNUNG (2026-10-19) — dieser Task ist so NICHT umsetzbar.**
+> Die Prämisse unten ist falsch. Nachgeprüft in der **installierten**
+> M5Cardputer **v1.1.1** (`.pio/libdeps/m5stack-stamps3/M5Cardputer/src/utility/Keyboard/`):
+> `struct KeysState` hat **keine** Felder `up/down/left/right/esc` — nur
+> `tab, fn, shift, ctrl, opt, alt, del, enter, space, modifiers, word,
+> hid_keys, modifier_keys`. `Keyboard.cpp` PASS 2 setzt `KEY_FN` nur als Flag
+> und **ändert das erzeugte Zeichen nicht**; es gibt keine fn-Zeichenebene.
+> `fn`+`` ` `` erzeugt schlicht `` ` `` in `status.word`.
+>
+> Der folgende Code kompiliert daher nicht
+> (`error: 'struct KeysState' has no member named 'esc'`), und der in
+> `PROJECT_STATUS.md` als „offener Bug" geführte fn+Esc-Fall existiert nicht —
+> `keyStateHasChar(status, '`')` war bereits korrekt.
+>
+> **Konsequenz für den Rest des Tasks:** die Prämisse nur für die
+> Bauchbinde/Key-Hints übernehmen (die ist weiter sinnvoll), die
+> `keyUp/keyDown/keyLeft/keyRight/keyEsc`-Helper und den fn+Esc-Fix streichen.
+> Review-Kriterium: der Task muss `pio run -e m5stack-stamps3` grün lassen.
+
 **Objective:** Make real arrow keys work everywhere (fn layer), keep `;`/`.`/`n`/`m` as fallback, and show the current view's bindings in a bottom ticker. Also fixes the pre-existing fn+Esc bug in config mode.
 
 **Files:**
