@@ -303,15 +303,13 @@ void Display::showConfigMode()
     drawHeader("Config Mode");
 
     M5Cardputer.Display.setCursor(5, 30);
-    M5Cardputer.Display.println("Configuration Portal Active");
+    M5Cardputer.Display.println("Config via SD card:");
     M5Cardputer.Display.setCursor(5, 50);
-    M5Cardputer.Display.println("Connect to:");
+    M5Cardputer.Display.println("/deauthdetector/");
     M5Cardputer.Display.setCursor(5, 65);
-    M5Cardputer.Display.println("SSID: M5-DeauthDetector");
-    M5Cardputer.Display.setCursor(5, 85);
-    M5Cardputer.Display.println("Navigate to:");
-    M5Cardputer.Display.setCursor(5, 100);
-    M5Cardputer.Display.println("http://192.168.4.1");
+    M5Cardputer.Display.println("deauthconfig.txt");
+    M5Cardputer.Display.setCursor(5, 90);
+    M5Cardputer.Display.println("Enter/Esc: monitoring");
 }
 
 void Display::showMonitoring()
