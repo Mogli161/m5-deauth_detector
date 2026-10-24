@@ -223,7 +223,14 @@ void handleConfigMode() {
     if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
         Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
         if (status.enter || keyStateHasChar(status, ESC_KEY_CHAR)) {
-            enterMonitorMode();
+            // The SD config may have been edited by hand while we sat on this
+            // screen, so re-read it now - leaving config mode with a stale or
+            // invalid config would drop us into monitor mode with subsystems
+            // that never got begin()'d.
+            if (configManager.loadConfig()) {
+                enterMonitorMode();
+            }
+            // else: stay here, the SD config is still missing or invalid
         }
     }
 }
@@ -267,11 +274,15 @@ void handleMonitorMode() {
                 }
             }
         }
-        lastEventCount = events.size();
-
-        for (const DeauthEvent& event : events) {
-            logger.logEvent(event);
+        // Log only the newly arrived events, once each. The events vector is
+        // not cleared until the reporting interval fires, so iterating all of
+        // it here wrote every event to SD on every single loop() pass.
+        if (events.size() > lastEventCount) {
+            for (size_t i = lastEventCount; i < events.size(); i++) {
+                logger.logEvent(events[i]);
+            }
         }
+        lastEventCount = events.size();
     }
 
     // WifiIDS events (beacon-flood/evil-twin/karma/pnl-leak) fire the alert
@@ -296,7 +307,7 @@ void handleMonitorMode() {
 
             detector.stopMonitoring();
 
-            if (wifiManager->connectSTA()) {
+            if (wifiManager && wifiManager->connectSTA()) {
                 if (apiReporter) {
                     if (haveDeauthEvents) apiReporter->sendBatch(reportEvents);
                     if (haveIdsEvents) apiReporter->sendIdsBatch(reportIdsEvents);
